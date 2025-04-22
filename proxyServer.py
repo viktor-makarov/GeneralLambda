@@ -12,45 +12,41 @@ def str_to_bool(s):
 
 def proxyIncomingRequests(event, context):
     # Extract the original request details
-    method = event['requestContext']['http']['method']
-    path = event['requestContext']['http']['path']
-    isBase64Encoded = event.get('isBase64Encoded', False)
+    method = event.get('httpMethod') or event['requestContext']['http']['method']
+    path = event.get('path') or event['requestContext']['http']['path']
     headers = event['headers']
-    
     multiValueHeaders = event.get('multiValueHeaders', {})
-    body = event.get('body', None)
     stageVariables = event.get('stageVariables', {})
     queryStringParameters = event.get('queryStringParameters', {})
 
-    domain, loginput, logoutput, logrequest_args = stageVariables.get("domain"), str_to_bool(stageVariables.get("loginput")), str_to_bool(stageVariables.get("logoutput")), str_to_bool(stageVariables.get("logrequest_args"))
+    isBase64Encoded = event.get('isBase64Encoded', False)
+    body = event.get('body', None)
+    if isBase64Encoded and body:
+        body = base64.b64decode(body).decode('utf-8')
+
+    domain = stageVariables.get("domain", headers.get('host', ''))
+    protocol = stageVariables.get("protocol", headers.get('host', ''))
+    loginput = str_to_bool(stageVariables.get("loginput"))
+    logoutput = str_to_bool(stageVariables.get("logoutput"))
+    logrequest_args = str_to_bool(stageVariables.get("logrequest_args"))
 
     if loginput:
-        print("input event",event)
-
-    # We do not need to decode body as we pass it AS IS to the backend, without any changes
+        print("input event", event)
 
     # Remove the 'Forwarded' header if it exists
     headers.pop('x-forwarded-for', None)
-    #headers.pop('via', None)
-
-    # Define your backend URL
-    # Define your backend URL
-    if queryStringParameters:
-        query_params = '&'.join([f"{k}={v}" for k, v in queryStringParameters.items()])
-        backend_url = f"{domain}{path}?{query_params}"
-    else:
-        backend_url = f"{domain}{path}"
+    if domain:
+        headers['host'] = domain
     
-    # Forward the request to the backend
+    # Define backend URL
+    backend_url = f"{protocol}://{domain}{path}"
+    
     # Handle multiValueHeaders if they exist
     if multiValueHeaders:
-        # Convert multiValueHeaders to requests library format
-        # In requests, multiple values for the same header are passed as a list
         for header, values in multiValueHeaders.items():
             if values:  # Only set if there are values
                 headers[header] = values if len(values) > 1 else values[0]
-    
-    # Forward the request to the backend
+
     # Create a dictionary of request arguments
     request_args = {
         'method': method,
@@ -58,24 +54,38 @@ def proxyIncomingRequests(event, context):
         'headers': headers,
         'params': queryStringParameters
     }
-    # Only include the body if it's not None
+
     if body is not None:
         request_args['data'] = body
-    
+
     if logrequest_args:
-        print("request args",request_args)
+        print("request args", request_args)
+
     # Send the request with unpacked arguments
     response = requests.request(**request_args)
+    
 
+        # Check if the response content is binary
+    content_encoding = response.headers.get('Content-Encoding', '').lower()
+    content_type = response.headers.get('Content-Type', '').lower()
+
+    if content_encoding in ['gzip', 'deflate', 'br', 'zstd']:
+        is_binary = True
+    else:
+        is_binary = not (content_type.startswith('text/') or 
+                        'json' in content_type or 
+                        'xml' in content_type or 
+                        'javascript' in content_type)
+
+    
     # Return the backend's response
-
     output = {
-        'isBase64Encoded': isBase64Encoded,
+        'isBase64Encoded': is_binary,
         'statusCode': response.status_code,
         'headers': dict(response.headers),
-        'body': response.content
+        'body': base64.b64encode(response.content).decode('utf-8') if is_binary else response.text
     }
-
+    
     if logoutput:
         print("output result",output)
 
